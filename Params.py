@@ -40,6 +40,7 @@ def ParseArgs():
 	parser.add_argument('--lambda_x', type=float, default=1.0, help='Weight of main trajectory loss')
 	parser.add_argument('--lambda_y', type=float, default=1.0, help='Weight of auxiliary trajectory 1 loss')
 	parser.add_argument('--lambda_z', type=float, default=1.0, help='Weight of auxiliary trajectory 2 loss')
+	parser.add_argument('--patience', type=int, default=5, help='Patience for early stopping (epochs without improvement); 0 to disable')
 
 	parser.add_argument('--rebuild_k', type=int, default=1)
 	parser.add_argument('--e_loss', type=float, default=0.1)

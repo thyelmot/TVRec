@@ -58,6 +58,11 @@ class Coach:
 					precisionMax = reses['Precision']
 					bestEpoch = ep
 				log(self.makePrint('Test', ep, reses, tstFlag))
+				
+				# Check for early stopping
+				if args.patience > 0 and (ep - bestEpoch >= args.patience):
+					log(f"Early stopping triggered at epoch {ep}! No improvement on Recall for {args.patience} epochs. Best epoch was {bestEpoch}.")
+					break
 			print()
 		print('Best epoch : ', bestEpoch, ' , Recall : ', recallMax, ' , NDCG : ', ndcgMax, ' , Precision', precisionMax)
 
