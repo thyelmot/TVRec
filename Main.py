@@ -28,7 +28,7 @@ class Coach:
 		ret = 'Epoch %d/%d, %s: ' % (ep, args.epoch, name)
 		for metric in reses:
 			val = reses[metric]
-			ret += '%s = %.4f, ' % (metric, val)
+			ret += '%s = %.5f, ' % (metric, val)
 			tem = name + metric
 			if save and tem in self.metrics:
 				self.metrics[tem].append(val)
