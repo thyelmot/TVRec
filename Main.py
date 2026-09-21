@@ -9,6 +9,7 @@ from Utils.Utils import *
 import os
 import scipy.sparse as sp
 import random
+import tempfile
 import setproctitle
 from scipy.sparse import coo_matrix
 
@@ -19,9 +20,10 @@ class Coach:
 		print('USER', args.user, 'ITEM', args.item)
 		print('NUM OF INTERACTIONS', self.handler.trnLoader.dataset.__len__())
 		self.metrics = dict()
-		mets = ['Loss', 'preLoss', 'Recall', 'NDCG']
+		mets = ['Loss', 'preLoss', 'Recall', 'NDCG', 'Precision']
 		for met in mets:
 			self.metrics['Train' + met] = list()
+			self.metrics['Validation' + met] = list()
 			self.metrics['Test' + met] = list()
 
 	def makePrint(self, name, ep, reses, save):
@@ -36,35 +38,68 @@ class Coach:
 		return ret
 
 	def run(self):
+		if args.epoch < 1 or args.tstEpoch < 1 or args.patience < 0:
+			raise ValueError('epoch and tstEpoch must be positive; patience must be nonnegative')
 		self.prepareModel()
 		log('Model Prepared')
+		os.makedirs(args.checkpoint_dir, exist_ok=True)
+		run_dir = tempfile.mkdtemp(prefix=f'{args.data}_seed{args.seed}_', dir=args.checkpoint_dir)
+		self.checkpoint_path = os.path.join(run_dir, 'best.pt')
+		log(f'Best checkpoint: {self.checkpoint_path}')
 
-		recallMax = 0
-		ndcgMax = 0
-		precisionMax = 0
-		bestEpoch = 0
-
-		log('Model Initialized')
-
-		for ep in range(0, args.epoch):
-			tstFlag = (ep % args.tstEpoch == 0)
+		recallMax = -float('inf')
+		bestEpoch = -1
+		for ep in range(args.epoch):
+			valFlag = (ep % args.tstEpoch == 0 or ep == args.epoch - 1)
 			reses = self.trainEpoch()
-			log(self.makePrint('Train', ep, reses, tstFlag))
-			if tstFlag:
-				reses = self.testEpoch()
-				if (reses['Recall'] > recallMax):
+			log(self.makePrint('Train', ep, reses, valFlag))
+			if valFlag:
+				reses = self.testEpoch(self.handler.valLoader)
+				if not all(np.isfinite(value) for value in reses.values()):
+					raise ValueError('Non-finite validation metrics; refusing to select a checkpoint')
+				if reses['Recall'] > recallMax:
 					recallMax = reses['Recall']
-					ndcgMax = reses['NDCG']
-					precisionMax = reses['Precision']
 					bestEpoch = ep
-				log(self.makePrint('Test', ep, reses, tstFlag))
-				
-				# Check for early stopping
-				if args.patience > 0 and (ep - bestEpoch >= args.patience):
-					log(f"Early stopping triggered at epoch {ep}! No improvement on Recall for {args.patience} epochs. Best epoch was {bestEpoch}.")
+					self.saveCheckpoint(ep, reses)
+				log(self.makePrint('Validation', ep, reses, True))
+				if args.patience > 0 and ep - bestEpoch >= args.patience:
+					log(f'Early stopping at epoch {ep}; best validation epoch: {bestEpoch}')
 					break
 			print()
-		print('Best epoch : ', bestEpoch, ' , Recall : ', recallMax, ' , NDCG : ', ndcgMax, ' , Precision', precisionMax)
+
+		checkpoint = self.loadCheckpoint()
+		log(self.makePrint('Best Validation', checkpoint['epoch'], checkpoint['validation'], False))
+		# Test is evaluated once, after restoring the validation-selected state.
+		reses = self.testEpoch()
+		log(self.makePrint('Test', checkpoint['epoch'], reses, True))
+		return reses
+
+	def saveCheckpoint(self, epoch, validation):
+		modalities = ['image', 'text', 'audio'] if args.data == 'tiktok' else ['image', 'text']
+		checkpoint = {
+			'epoch': epoch,
+			'validation': {key: float(value) for key, value in validation.items()},
+			'args': vars(args).copy(),
+			'model': {key: value.detach().cpu() for key, value in self.model.state_dict().items()},
+			'denoisers': {},
+			'graphs': {},
+		}
+		for modality in modalities:
+			denoiser = getattr(self, 'denoise_model_' + modality)
+			checkpoint['denoisers'][modality] = {key: value.detach().cpu() for key, value in denoiser.state_dict().items()}
+			# Preserve the exact graph, including the epoch's sampled edge dropout.
+			checkpoint['graphs'][modality] = getattr(self, modality + '_UI_matrix').coalesce().cpu()
+		torch.save(checkpoint, self.checkpoint_path + '.tmp')
+		os.replace(self.checkpoint_path + '.tmp', self.checkpoint_path)
+
+	def loadCheckpoint(self):
+		checkpoint = torch.load(self.checkpoint_path, map_location='cpu', weights_only=True)
+		self.model.load_state_dict(checkpoint['model'])
+		device = next(self.model.parameters()).device
+		for modality, state in checkpoint['denoisers'].items():
+			getattr(self, 'denoise_model_' + modality).load_state_dict(state)
+			setattr(self, modality + '_UI_matrix', checkpoint['graphs'][modality].to(device))
+		return checkpoint
 
 	def prepareModel(self):
 		if args.data == 'tiktok':
@@ -115,6 +150,7 @@ class Coach:
 		return torch.sparse.FloatTensor(idxs, vals, shape).cuda()
 
 	def trainEpoch(self):
+		self.model.train()
 		trnLoader = self.handler.trnLoader
 		trnLoader.dataset.negSampling()
 		epLoss, epRecLoss, epClLoss = 0, 0, 0
@@ -321,12 +357,17 @@ class Coach:
 			ret['Di audio loss'] = epDiLoss_audio / (diffusionLoader.dataset.__len__() // args.batch)
 		return ret
 
-	def testEpoch(self):
-		tstLoader = self.handler.tstLoader
+	@torch.no_grad()
+	def testEpoch(self, tstLoader=None):
+		self.model.eval()
+		if tstLoader is None:
+			tstLoader = self.handler.tstLoader
 		epRecall, epNdcg, epPrecision = [0] * 3
 		i = 0
 		num = tstLoader.dataset.__len__()
-		steps = num // args.tstBat
+		if num == 0 or not 1 <= args.topk <= args.item:
+			raise ValueError('Evaluation needs a nonempty split and 1 <= topk <= item count')
+		steps = len(tstLoader)
 
 		if args.data == 'tiktok':
 			usrEmbeds, itmEmbeds = self.model.forward_MM(self.handler.torchBiAdj, self.image_UI_matrix, self.text_UI_matrix, self.audio_UI_matrix)
@@ -337,9 +378,9 @@ class Coach:
 			i += 1
 			usr = usr.long().cuda()
 			trnMask = trnMask.cuda()
-			allPreds = torch.mm(usrEmbeds[usr], torch.transpose(itmEmbeds, 1, 0)) * (1 - trnMask) - trnMask * 1e8
+			allPreds = torch.mm(usrEmbeds[usr], torch.transpose(itmEmbeds, 1, 0)).masked_fill(trnMask.bool(), -float('inf'))
 			_, topLocs = torch.topk(allPreds, args.topk)
-			recall, ndcg, precision = self.calcRes(topLocs.cpu().numpy(), self.handler.tstLoader.dataset.tstLocs, usr)
+			recall, ndcg, precision = self.calcRes(topLocs.cpu().numpy(), tstLoader.dataset.tstLocs, usr.cpu().tolist())
 			epRecall += recall
 			epNdcg += ndcg
 			epPrecision += precision
@@ -383,7 +424,76 @@ def seed_it(seed):
 	torch.backends.cudnn.enabled = True
 	torch.manual_seed(seed)
 
+def self_check():
+	"""Small CPU check for TVS and validation-selected checkpoint restoration."""
+	from types import SimpleNamespace
+	from unittest.mock import patch
+	from DataHandler import TstData
+
+	# ponytail: synthetic smoke check; extend here for new failure cases.
+	with tempfile.TemporaryDirectory() as directory, \
+		patch.dict(vars(args), data='tiktok', user=2, item=4, epoch=3, tstEpoch=1, patience=1, checkpoint_dir=directory), \
+		patch.object(torch.Tensor, 'cuda', lambda self, *a, **k: self):
+		x = torch.tensor([[1., 0., 0., 0.], [0., 1., 0., 0.]])
+		u, items = torch.ones(2, 3), torch.ones(4, 3)
+		diffusion = GaussianDiffusionTVS(0.001, 3, anchor_w=2.)
+		anchor = diffusion._compute_anchor(u, items)
+		for t in range(3):
+			ts = torch.full((2,), t, dtype=torch.long)
+			noise = torch.randn_like(x)
+			noisy = diffusion.q_sample(x, anchor, ts, noise)
+			velocity = (1 - diffusion.sigma_min) * (2 * anchor + noise) - x
+			sigma = diffusion._extract_into_tensor(diffusion.sigma_coef, ts, x.shape)
+			torch.testing.assert_close((1 - diffusion.sigma_min) * noisy - sigma * velocity, x, rtol=0, atol=2e-6)
+		denoiser = Denoise([4, 3], [3, 4], 4)
+		losses = diffusion.training_losses(denoiser, x, items, torch.arange(2), items, u)
+		assert all(torch.isfinite(loss).all() for loss in losses)
+		sum(loss.mean() for loss in losses).backward()
+		assert all(p.grad is not None and torch.isfinite(p.grad).all() for p in denoiser.parameters())
+
+		train = sp.coo_matrix(([1.], ([0], [0])), shape=(2, 4))
+		val = sp.coo_matrix(([1.], ([0], [1])), shape=(2, 4))
+		test = sp.coo_matrix(([1.], ([0], [2])), shape=(2, 4))
+		assert np.array_equal(TstData(val, train)[0][1], [1, 0, 0, 0])
+		assert np.array_equal(TstData(test, train + val)[0][1], [1, 1, 0, 0])
+
+		class CheckCoach(Coach):
+			def prepareModel(self):
+				self.model = torch.nn.Linear(1, 1)
+				self.trained = self.test_calls = 0
+				for modality in ('image', 'text', 'audio'):
+					setattr(self, 'denoise_model_' + modality, torch.nn.Linear(1, 1))
+
+			def trainEpoch(self):
+				self.trained += 1
+				with torch.no_grad():
+					self.model.weight.fill_(self.trained)
+					for modality in ('image', 'text', 'audio'):
+						getattr(self, 'denoise_model_' + modality).weight.fill_(self.trained)
+						setattr(self, modality + '_UI_matrix', (torch.eye(2) * self.trained).to_sparse())
+				return {'Loss': 0.}
+
+			def testEpoch(self, loader=None):
+				if loader is not None:
+					assert loader is self.handler.valLoader
+					return {'Recall': [0., .5, .2][self.trained - 1], 'NDCG': np.float64(0.)}
+				self.test_calls += 1
+				assert self.trained == 3 and self.model.weight.item() == 2
+				for modality in ('image', 'text', 'audio'):
+					assert getattr(self, 'denoise_model_' + modality).weight.item() == 2
+					torch.testing.assert_close(getattr(self, modality + '_UI_matrix').to_dense(), torch.eye(2) * 2)
+				return {'Recall': 1.}
+
+		coach = CheckCoach(SimpleNamespace(trnLoader=SimpleNamespace(dataset=[1]), valLoader=object()))
+		coach.run()
+		assert coach.test_calls == 1 and len(coach.metrics['ValidationRecall']) == 3
+		assert coach.loadCheckpoint()['epoch'] == 1
+	print('PASS: TVS reconstruction/backward, masks, best checkpoint and final-only test.')
+
 if __name__ == '__main__':
+	if args.self_check:
+		self_check()
+		raise SystemExit(0)
 	seed_it(args.seed)
 
 	os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu

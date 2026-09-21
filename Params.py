@@ -2,6 +2,7 @@ import argparse
 
 def ParseArgs():
 	parser = argparse.ArgumentParser(description='Model Params')
+	parser.add_argument('--self_check', action='store_true', help='Run a small CPU self-check without training or datasets')
 	parser.add_argument('--lr', default=1e-3, type=float, help='learning rate')
 	parser.add_argument('--batch', default=1024, type=int, help='batch size')
 	parser.add_argument('--tstBat', default=256, type=int, help='number of users in a testing batch')
@@ -13,7 +14,7 @@ def ParseArgs():
 	parser.add_argument('--data', default='allrecipes', type=str, help='name of dataset')
 	parser.add_argument('--ssl_reg', default=1e-2, type=float, help='weight for contrative learning')
 	parser.add_argument('--temp', default=0.5, type=float, help='temperature in contrastive learning')
-	parser.add_argument('--tstEpoch', default=1, type=int, help='number of epoch to test while training')
+	parser.add_argument('--tstEpoch', default=1, type=int, help='validation interval in epochs (legacy argument name)')
 	parser.add_argument('--gpu', default='0', type=str, help='indicates which gpu to use')
 	parser.add_argument("--seed", type=int, default=421, help="random seed")
 
@@ -39,7 +40,9 @@ def ParseArgs():
 	parser.add_argument('--lambda_x', type=float, default=1.0, help='Weight of main trajectory loss')
 	parser.add_argument('--lambda_y', type=float, default=1.0, help='Weight of auxiliary trajectory 1 loss')
 	parser.add_argument('--lambda_z', type=float, default=1.0, help='Weight of auxiliary trajectory 2 loss')
-	parser.add_argument('--patience', type=int, default=5, help='Patience for early stopping (epochs without improvement); 0 to disable')
+	parser.add_argument('--patience', type=int, default=5, help='Epochs without validation Recall improvement; checked at validation; 0 to disable')
+
+	parser.add_argument('--checkpoint_dir', type=str, default='checkpoints', help='Parent directory for a separate best-checkpoint folder per run')
 
 	parser.add_argument('--rebuild_k', type=int, default=1)
 	parser.add_argument('--e_loss', type=float, default=0.1)

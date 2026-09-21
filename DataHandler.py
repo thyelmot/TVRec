@@ -20,6 +20,7 @@ class DataHandler:
 			predir = './Datasets/tiktok/'
 		self.predir = predir
 		self.trnfile = predir + 'trnMat.pkl'
+		self.valfile = predir + 'valMat.pkl'
 		self.tstfile = predir + 'tstMat.pkl'
 
 		self.imagefile = predir + 'image_feat.npy'
@@ -63,14 +64,24 @@ class DataHandler:
 
 	def LoadData(self):
 		trnMat = self.loadOneFile(self.trnfile)
+		valMat = self.loadOneFile(self.valfile)
 		tstMat = self.loadOneFile(self.tstfile)
+		for name, mat in [('train', trnMat), ('validation', valMat), ('test', tstMat)]:
+			if mat.shape != trnMat.shape or mat.nnz == 0:
+				raise ValueError(f'{name} must be nonempty and have shape {trnMat.shape}')
+		for name, left, right in [('train/validation', trnMat, valMat), ('train/test', trnMat, tstMat), ('validation/test', valMat, tstMat)]:
+			if left.tocsr().multiply(right.tocsr()).nnz:
+				raise ValueError(f'Overlapping interactions in {name} splits')
 		self.trnMat = trnMat
 		args.user, args.item = trnMat.shape
 		self.torchBiAdj = self.makeTorchAdj(trnMat)
 
 		trnData = TrnData(trnMat)
 		self.trnLoader = dataloader.DataLoader(trnData, batch_size=args.batch, shuffle=True, num_workers=0)
-		tstData = TstData(tstMat, trnMat)
+		valData = TstData(valMat, trnMat)
+		self.valLoader = dataloader.DataLoader(valData, batch_size=args.tstBat, shuffle=False, num_workers=0)
+		# Validation excludes train items; final test excludes train + validation items.
+		tstData = TstData(tstMat, trnMat.tocsr() + valMat.tocsr())
 		self.tstLoader = dataloader.DataLoader(tstData, batch_size=args.tstBat, shuffle=False, num_workers=0)
 
 		self.image_feats, args.image_feat_dim = self.loadFeatures(self.imagefile)
