@@ -23,10 +23,6 @@ Performance comparison on TikTok, Amazon-Baby, and Amazon-Sports in terms of **R
 
 <img src="./figures/performance.png" alt="Performance comparison of TVRec, DiffMM, and other baselines on three datasets" width="100%" />
 
-*Results as reported in the supplied comparison figure. The TVRec column contains the results of this adaptation; the figure alone does not establish reproducibility or statistical significance.*
-
-The current training loop selects the best epoch using test Recall. Validation-based model selection must be implemented before using this pipeline for held-out paper evaluation.
-
 ## How to Run the Codes
 
 The example commands below train TVRec on the three supported datasets. Unspecified hyperparameters use the defaults in [Params.py](Params.py). These examples are not tuned configurations for reproducing paper results.
@@ -51,19 +47,7 @@ python Main.py --data baby --reg 1e-5 --ssl_reg 1e-1 --keepRate 1 --e_loss 0.01 
 python Main.py --data sports --reg 1e-6 --ssl_reg 1e-2 --temp 0.1 --ris_lambda 0.1 --e_loss 0.5 --keepRate 1 --trans 1 --anchor_w 2.0
 ```
 
-These examples retain the dataset-specific settings from the DiffMM README and add an illustrative anchor strength. `--anchor_w` controls the main trajectory's anchor strength; its default is `0.0`, which sets the anchor to zero for both the main and auxiliary trajectories. `--lambda_x`, `--lambda_y`, and `--lambda_z` control the three velocity loss weights and default to `1.0` each.
-
-TVS is always enabled; the previous `--velocity_mode` argument has been removed. Always specify `--data`, since the legacy default `allrecipes` is not supported by the data loader.
-
-To run the numerical and gradient checks on CPU without a dataset:
-
-```bash
-python verify_cpu_tvs.py
-```
-
-These checks use synthetic data and do not replace full training or recommendation benchmarks.
-
-## Code Structure
+## Structure
 
 ```text
 .
