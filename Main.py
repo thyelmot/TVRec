@@ -73,7 +73,7 @@ class Coach:
 			self.model = Model(self.handler.image_feats.detach(), self.handler.text_feats.detach()).cuda()
 		self.opt = torch.optim.Adam(self.model.parameters(), lr=args.lr, weight_decay=0)
 
-		self.diffusion_model = GaussianDiffusionTVS(args.sigma_min, args.steps, w_clip=args.w_clip, num_sample_steps=args.num_sample_steps, anchor_w=args.anchor_w, velocity_mode=args.velocity_mode, lambda_x=args.lambda_x, lambda_y=args.lambda_y, lambda_z=args.lambda_z).cuda()
+		self.diffusion_model = GaussianDiffusionTVS(args.sigma_min, args.steps, w_clip=args.w_clip, num_sample_steps=args.num_sample_steps, anchor_w=args.anchor_w, lambda_x=args.lambda_x, lambda_y=args.lambda_y, lambda_z=args.lambda_z).cuda()
 		
 		out_dims = eval(args.dims) + [args.item]
 		in_dims = out_dims[::-1]
@@ -143,7 +143,7 @@ class Coach:
 			if args.data == 'tiktok':
 				self.denoise_opt_audio.zero_grad()
 
-			uEmbeds_batch = uEmbeds[batch_index]  # [Phuong an 6] dung de tinh diem neo alpha_l (CT-6.1)
+			uEmbeds_batch = uEmbeds[batch_index]  # Diem neo cho cac quy dao TVS.
 
 			diff_loss_image, gc_loss_image = self.diffusion_model.training_losses(self.denoise_model_image, batch_item, iEmbeds, batch_index, image_feats, uEmbeds_batch)
 			diff_loss_text, gc_loss_text = self.diffusion_model.training_losses(self.denoise_model_text, batch_item, iEmbeds, batch_index, text_feats, uEmbeds_batch)
@@ -197,7 +197,7 @@ class Coach:
 				batch_item, batch_index = batch_item.cuda(), batch_index.cuda()
 
 				# image
-				denoised_batch = self.diffusion_model.p_sample(self.denoise_model_image, batch_item, uEmbeds[batch_index], iEmbeds, args.sampling_steps, args.sampling_noise)  # [Phuong an 6] them diem neo
+				denoised_batch = self.diffusion_model.p_sample(self.denoise_model_image, batch_item, uEmbeds[batch_index], iEmbeds, args.sampling_steps, args.sampling_noise)
 				top_item, indices_ = torch.topk(denoised_batch, k=args.rebuild_k)
 
 				for i in range(batch_index.shape[0]):
@@ -207,7 +207,7 @@ class Coach:
 						edge_list_image.append(1.0)
 
 				# text
-				denoised_batch = self.diffusion_model.p_sample(self.denoise_model_text, batch_item, uEmbeds[batch_index], iEmbeds, args.sampling_steps, args.sampling_noise)  # [Phuong an 6] them diem neo
+				denoised_batch = self.diffusion_model.p_sample(self.denoise_model_text, batch_item, uEmbeds[batch_index], iEmbeds, args.sampling_steps, args.sampling_noise)
 				top_item, indices_ = torch.topk(denoised_batch, k=args.rebuild_k)
 
 				for i in range(batch_index.shape[0]):
@@ -218,7 +218,7 @@ class Coach:
 
 				if args.data == 'tiktok':
 					# audio
-					denoised_batch = self.diffusion_model.p_sample(self.denoise_model_audio, batch_item, uEmbeds[batch_index], iEmbeds, args.sampling_steps, args.sampling_noise)  # [Phuong an 6] them diem neo
+					denoised_batch = self.diffusion_model.p_sample(self.denoise_model_audio, batch_item, uEmbeds[batch_index], iEmbeds, args.sampling_steps, args.sampling_noise)
 					top_item, indices_ = torch.topk(denoised_batch, k=args.rebuild_k)
 
 					for i in range(batch_index.shape[0]):

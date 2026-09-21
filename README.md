@@ -1,56 +1,104 @@
-# DiffMM-TVS — Phương án 7 (Triangle Velocities Synergy - TVS)
+# TVRec: Flow-Guided Triangle Velocities Synergy for Multimodal Recommendation
 
-Đây là bản fork của [HKUDS/DiffMM](https://github.com/HKUDS/DiffMM) (paper *DiffMM: Multi-Modal Diffusion Model for Recommendation*, ACM MM 2024) với **Phương án 7** trong kế hoạch tối ưu [`DiffMM_OFM_Optimization_Plan.md`](../../DiffMM_OFM_Optimization_Plan.md) đã được áp dụng trực tiếp vào code. Chi tiết thiết kế + suy diễn công thức đầy đủ ở [`Phuong_An_7_TVS_KeHoachChiTiet.md`](../../Phuong_An_7_TVS_KeHoachChiTiet.md); kết quả kiểm chứng patch thật ở [`verify_cpu_tvs.py`](verify_cpu_tvs.py).
+This is the PyTorch implementation of **TVRec**, a multimodal recommendation framework built upon [**DiffMM**](https://github.com/HKUDS/DiffMM) (ACM MM 2024) and inspired by **Triangle Velocities Synergy (TVS)** from [**Optical Flow Matching (OFM)**](https://openaccess.thecvf.com/content/CVPR2026/html/Luo_Optical_Flow_Matching_Reframing_Optical_Flow_as_Continuous_Transport_Dynamics_CVPR_2026_paper.html) (CVPR 2026).
 
-## Thay đổi so với bản gốc
+TVRec adapts the idea of TVS to user–item interaction reconstruction. Instead of directly predicting clean interaction vectors, the denoising module learns velocities along a main trajectory, an anchor-directed auxiliary trajectory, and a stationary auxiliary trajectory. The predicted velocity is converted into interaction scores to rebuild modality-specific user–item graphs. The framework retains DiffMM's multimodal graph aggregation and cross-modal contrastive learning. TVS is attributed to OFM; TVRec denotes the recommendation-specific adaptation implemented in this repository.
 
-Ý tưởng lấy từ Optical Flow Matching (OFM, CVPR 2025): thay vì dạy mạng hồi quy dữ liệu gốc trực tiếp (data-prediction), ta chuyển sang quy trình hồi quy vận tốc (velocity-prediction) trên 3 quỹ đạo (quỹ đạo chính $x_t$, quỹ đạo phụ 1 $y_t$ hướng tới điểm neo thô, và quỹ đạo phụ 2 $z_t$ đứng yên tại chỗ). 
+<img src="./figures/model.png" alt="DiffMM backbone architecture" width="100%" />
 
-### 1. Ba quỹ đạo (CT-7.1)
-- Quỹ đạo chính (từ $\alpha_0 \rightarrow \alpha_{ref}$): $x_t = \mu_t \alpha_0 + \sigma_t w \alpha_l + \sigma_t \epsilon$
-- Quỹ đạo phụ 1 (từ $\alpha_0 \rightarrow \alpha_l$): $y_t = t_{norm} \alpha_l + (1-t_{norm}) \alpha_0 + \sigma_{min} \epsilon_y$
-- Quỹ đạo phụ 2 (từ $\alpha_0 \rightarrow \alpha_0$): $z_t = \alpha_0 + \sigma_{min} \epsilon_z$
+## Environment
 
-### 2. Ba vận tốc tương ứng (CT-7.2 & CT-7.3)
-- Vận tốc target quỹ đạo chính: $v_{gt\_x} = (1 - \sigma_{min})(w \alpha_l + \epsilon) - x_{start}$
-- Vận tốc target quỹ đạo phụ 1: $v_{gt\_y} = \alpha_l - x_{start}$
-- Vận tốc target quỹ đạo phụ 2: $v_{gt\_z} = 0$
+The implementation uses the following dependencies:
 
-### 3. Công thức tái tạo dữ liệu không NaN/Inf (CT-7.4)
-Thay vì dùng công thức chia cho $1-t$ dễ gây bất ổn định số ở biên, chúng ta đã chứng minh đại số và kiểm chứng số học công thức tái tạo đóng cực kỳ ổn định:
-$$\hat{\alpha}_0 = (1 - \sigma_{min}) x_t - \sigma_t v_{pred}$$
+- Python
+- PyTorch with CUDA support
+- NumPy
+- SciPy
+- tqdm
+- setproctitle
 
-Khi tắt chế độ TVS (`velocity_mode=False`), mô hình tự động fallback về Phương án 6 (hồi quy dữ liệu gốc trực tiếp).
+## Experimental Results
 
-| File | Thay đổi |
-|---|---|
-| `Params.py` | Thêm các tham số mới: `--velocity_mode` (1: bật TVS, 0: tắt), `--lambda_x`, `--lambda_y`, `--lambda_z` để kiểm soát trọng số loss 3 quỹ đạo. |
-| `Model.py` | Thêm class `GaussianDiffusionTVS(GaussianDiffusionAnchorOT)` ở cuối file. Override `p_mean_variance` để tự động chuyển đổi velocity $\rightarrow$ data khi `velocity_mode=True`. Override `training_losses` để tính loss TVS trên 3 quỹ đạo. |
-| `Main.py` | Cập nhật dòng import `GaussianDiffusionTVS` và khởi tạo mô hình truyền đầy đủ các tham số TVS. |
+Performance comparison on TikTok, Amazon-Baby, and Amazon-Sports in terms of **Recall@20**, **Precision@20**, and **NDCG@20**:
 
-Toàn bộ phần còn lại (kiến trúc mạng `Denoise` MLP, top-k rebuild đồ thị, MSI/`gc_loss`, Cross-Modal Contrastive Augmentation, Multi-Modal Graph Aggregation, Multi-Task Training) **giữ nguyên 100%** so với bản gốc.
+<img src="./figures/performance.png" alt="Performance comparison of TVRec, DiffMM, and other baselines on three datasets" width="100%" />
 
-## Đã kiểm chứng trước khi bàn giao
+*Results as reported in the supplied comparison figure. The TVRec column contains the results of this adaptation; the figure alone does not establish reproducibility or statistical significance.*
 
-- [x] Patch biên dịch sạch (`py_compile`).
-- [x] Kiểm tra số học trên CPU qua `verify_cpu_tvs.py`:
-  - Lớp `GaussianDiffusionTVS` khi tắt TVS (`velocity_mode=False`) cho kết quả q_sample, p_mean_variance và p_sample **khớp tuyệt đối** với lớp cha `GaussianDiffusionAnchorOT` (an toàn tuyệt đối để tích hợp).
-  - Công thức tái tạo $\hat{\alpha}_0$ (CT-7.4) ổn định số học hoàn toàn và cho phép **tái tạo 100% dữ liệu gốc** với denoiser hoàn hảo (sai số $< 10^{-7}$).
-  - Hàm `training_losses` chạy ổn định, không NaN/Inf trên dải tham số rộng.
-- [x] Notebook đã dry-run cell-theo-cell (nhánh thành công + nhánh lỗi).
+The current training loop selects the best epoch using test Recall. Validation-based model selection must be implemented before using this pipeline for held-out paper evaluation.
 
-## Dữ liệu
+## How to Run the Codes
 
-Dữ liệu được tải tự động từ Google Drive khi chạy notebook Colab đi kèm (xem `DiffMM_PhuongAn7_TVS_Colab.ipynb` ở thư mục cha). Định dạng dữ liệu: `trnMat.pkl`, `tstMat.pkl`, `image_feat.npy`, `text_feat.npy` (+ `audio_feat.npy` nếu dùng `tiktok`).
+The example commands below train TVRec on the three supported datasets. Unspecified hyperparameters use the defaults in [Params.py](Params.py). These examples are not tuned configurations for reproducing paper results.
 
-## Chạy cục bộ (không qua Colab)
+Prepare the datasets as described in the **Datasets** section, then run the commands from the repository root.
 
-Để chạy thử nghiệm TVS:
+- **TikTok**
+
 ```bash
-python Main.py --data tiktok --epoch 50 --velocity_mode 1 --anchor_w 2.0 --lambda_x 1.0 --lambda_y 1.0 --lambda_z 1.0
+python Main.py --data tiktok --reg 1e-4 --ssl_reg 1e-2 --epoch 50 --trans 1 --e_loss 0.1 --cl_method 1 --anchor_w 2.0
 ```
 
-Để fallback về AnchorOT (PA6):
+- **Baby**
+
 ```bash
-python Main.py --data tiktok --epoch 50 --velocity_mode 0 --anchor_w 2.0
+python Main.py --data baby --reg 1e-5 --ssl_reg 1e-1 --keepRate 1 --e_loss 0.01 --anchor_w 2.0
 ```
+
+- **Sports**
+
+```bash
+python Main.py --data sports --reg 1e-6 --ssl_reg 1e-2 --temp 0.1 --ris_lambda 0.1 --e_loss 0.5 --keepRate 1 --trans 1 --anchor_w 2.0
+```
+
+These examples retain the dataset-specific settings from the DiffMM README and add an illustrative anchor strength. `--anchor_w` controls the main trajectory's anchor strength; its default is `0.0`, which sets the anchor to zero for both the main and auxiliary trajectories. `--lambda_x`, `--lambda_y`, and `--lambda_z` control the three velocity loss weights and default to `1.0` each.
+
+TVS is always enabled; the previous `--velocity_mode` argument has been removed. Always specify `--data`, since the legacy default `allrecipes` is not supported by the data loader.
+
+To run the numerical and gradient checks on CPU without a dataset:
+
+```bash
+python verify_cpu_tvs.py
+```
+
+These checks use synthetic data and do not replace full training or recommendation benchmarks.
+
+## Code Structure
+
+```text
+.
+├── README.md
+├── Main.py
+├── Model.py
+├── Params.py
+├── DataHandler.py
+├── verify_cpu_tvs.py
+├── Utils
+│   ├── TimeLogger.py
+│   └── Utils.py
+├── figures
+│   ├── model.png
+│   ├── dataset.png
+│   └── performance.png
+└── Datasets
+    ├── README.md
+    ├── baby
+    │   ├── image_feat.npy.zip
+    │   ├── text_feat.npy
+    │   ├── trnMat.pkl
+    │   ├── tstMat.pkl
+    │   └── valMat.pkl
+    └── tiktok
+        ├── audio_feat.npy
+        ├── image_feat.npy
+        ├── text_feat.npy
+        ├── trnMat.pkl
+        ├── tstMat.pkl
+        └── valMat.pkl
+```
+
+## Datasets
+
+<img src="./figures/dataset.png" alt="Dataset statistics and visual, acoustic, and textual feature dimensions reported by DiffMM" width="100%" />
+
+## Citation

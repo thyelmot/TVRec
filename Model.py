@@ -542,65 +542,33 @@ class GaussianDiffusionOTCFM(GaussianDiffusion):
 			x_t = model_mean  # tat dinh (sampling_noise khong ho tro, giong Phuong an 1)
 		return x_t
 
-class GaussianDiffusionAnchorOT(GaussianDiffusionOTCFM):
-	"""
-	[Phuong an 6 - Phuong_An_6_Learnable_Anchor_KeHoachChiTiet.md]
-	Ke thua GaussianDiffusionOTCFM (Phuong an 3) de tai su dung nguyen ven duong OT (D1) VA trong so
-	CFM (D2) - da CHUNG MINH DAI SO + KIEM CHUNG SO HOC rang trong so CFM BAT BIEN voi diem neo (CT-6.7
-	trong ban ke hoach chi tiet), nen KHONG can sua _precompute_cfm_weight/cfm_weight chut nao. Chi
-	override q_sample (D1) va p_mean_variance/p_sample (D4) de them dung 1 so hang moi: diem neo
-	alpha_l * anchor_w, nhan voi he so sigma_coef da co san (CT-6.2, CT-6.4).
-
-	alpha_l (CT-6.1) la 1 ham DONG (khong tham so hoc moi) cua embedding user/item DA CO SAN va DA
-	DUOC .detach() tu truoc (giong het cach model_feats/itmEmbeds duoc truyen vao o Phuong an 1-5) -
-	khong tao them vong lap phan hoi gradient nao.
-
-	anchor_w=0.0 (mac dinh) lam trung khit tuyet doi Phuong an 3 (CT-6.5, da kiem chung so hoc atol=0).
-	"""
-
-	def __init__(self, sigma_min, steps, w_clip=50.0, num_sample_steps=0, anchor_w=0.0):
-		super(GaussianDiffusionAnchorOT, self).__init__(sigma_min, steps, w_clip=w_clip, num_sample_steps=num_sample_steps)
+class GaussianDiffusionTVS(GaussianDiffusionOTCFM):
+	"""TVRec: hoc van toc tren ba quy dao voi diem neo tu embedding user/item."""
+	def __init__(self, sigma_min, steps, w_clip=50.0, num_sample_steps=0, anchor_w=0.0,
+				 lambda_x=1.0, lambda_y=1.0, lambda_z=1.0):
+		super(GaussianDiffusionTVS, self).__init__(sigma_min, steps, w_clip=w_clip,
+												   num_sample_steps=num_sample_steps)
 		self.anchor_w = anchor_w
+		self.lambda_x = lambda_x
+		self.lambda_y = lambda_y
+		self.lambda_z = lambda_z
 
 	def _compute_anchor(self, uEmbeds_batch, iEmbeds):
-		# CT-6.1: khong them tham so hoc moi - chi la ham dong cua embedding da co san
+		# Diem neo duoc tinh tu embedding user/item, khong them tham so hoc.
 		return torch.sigmoid(torch.mm(uEmbeds_batch, iEmbeds.t()))
 
 	def q_sample(self, x_start, alpha_l, t, noise=None):
-		# CT-6.2
 		if noise is None:
 			noise = torch.randn_like(x_start)
 		mu_t = self._extract_into_tensor(self.mu_coef, t, x_start.shape)
 		sigma_t = self._extract_into_tensor(self.sigma_coef, t, x_start.shape)
 		return mu_t * x_start + sigma_t * self.anchor_w * alpha_l + sigma_t * noise
 
-	def p_mean_variance(self, model, x, alpha_l, t):
-		# CT-6.4
-		model_output = model(x, t, False)  # du doan alpha_0 (khong doi parameterization)
-
-		mu_t = self._extract_into_tensor(self.mu_coef, t, x.shape)
-		sigma_t = self._extract_into_tensor(self.sigma_coef, t, x.shape)
-		noise_pred = (x - mu_t * model_output - sigma_t * self.anchor_w * alpha_l) / sigma_t.clamp(min=1e-8)
-
-		t_val = int(t[0].item())
-		t_prev_val = self.next_index_map[t_val]
-		if t_prev_val == -1:
-			mu_prev, sigma_prev = 1.0, 0.0
-		else:
-			t_prev = torch.full_like(t, t_prev_val)
-			mu_prev = self._extract_into_tensor(self.mu_coef, t_prev, x.shape)
-			sigma_prev = self._extract_into_tensor(self.sigma_coef, t_prev, x.shape)
-
-		# bien t=0 (mu_prev=1, sigma_prev=0): so hang neo tu triet tieu, dung quy uoc PA1/PA3 (CT-6.4)
-		model_mean = mu_prev * model_output + sigma_prev * self.anchor_w * alpha_l + sigma_prev * noise_pred
-		model_log_variance = None
-		return model_mean, model_log_variance
-
 	def p_sample(self, model, x_start, uEmbeds_batch, iEmbeds, steps, sampling_noise=False):
 		if self.anchor_w != 0:
 			alpha_l = self._compute_anchor(uEmbeds_batch, iEmbeds)
 		else:
-			alpha_l = torch.zeros_like(x_start)  # anchor_w=0 -> so hang neo = 0 du alpha_l la gi (CT-6.5)
+			alpha_l = torch.zeros_like(x_start)
 
 		if steps == 0:
 			x_t = x_start
@@ -614,63 +582,14 @@ class GaussianDiffusionAnchorOT(GaussianDiffusionOTCFM):
 			x_t = model_mean
 		return x_t
 
-	def training_losses(self, model, x_start, itmEmbeds, batch_index, model_feats, uEmbeds_batch):
-		batch_size = x_start.size(0)
-
-		if self.anchor_w != 0:
-			alpha_l = self._compute_anchor(uEmbeds_batch, itmEmbeds)
-		else:
-			alpha_l = torch.zeros_like(x_start)
-
-		ts = torch.randint(0, self.steps, (batch_size,)).long().cuda()
-		noise = torch.randn_like(x_start)
-		if self.noise_scale != 0:
-			x_t = self.q_sample(x_start, alpha_l, ts, noise)
-		else:
-			x_t = x_start
-
-		model_output = model(x_t, ts)
-
-		mse = self.mean_flat((x_start - model_output) ** 2)
-
-		weight = self._extract_into_tensor(self.cfm_weight, ts, mse.shape)  # KHONG doi - bat bien voi diem neo (CT-6.7)
-		diff_loss = weight * mse
-
-		usr_model_embeds = torch.mm(model_output, model_feats)
-		usr_id_embeds = torch.mm(x_start, itmEmbeds)
-
-		gc_loss = self.mean_flat((usr_model_embeds - usr_id_embeds) ** 2)
-
-		return diff_loss, gc_loss
-
-class GaussianDiffusionTVS(GaussianDiffusionAnchorOT):
-	"""
-	[Phuong an 7 - Phuong_An_7_TVS_KeHoachChiTiet.md]
-	Triangle Velocities Synergy cho DiffMM.
-	Ke thua GaussianDiffusionAnchorOT (Phuong an 6) de tai su dung nguyen ven duong OT (D1)
-	va trong so CFM (D2). Chi override training_losses va p_mean_variance.
-	"""
-	def __init__(self, sigma_min, steps, w_clip=50.0, num_sample_steps=0, anchor_w=0.0,
-				 velocity_mode=False, lambda_x=1.0, lambda_y=1.0, lambda_z=1.0):
-		super(GaussianDiffusionTVS, self).__init__(sigma_min, steps, w_clip=w_clip,
-												   num_sample_steps=num_sample_steps, anchor_w=anchor_w)
-		self.velocity_mode = bool(velocity_mode)
-		self.lambda_x = lambda_x
-		self.lambda_y = lambda_y
-		self.lambda_z = lambda_z
-
 	def p_mean_variance(self, model, x, alpha_l, t):
-		model_output = model(x, t, False) # v_pred neu velocity_mode=True, else alpha_0_pred
+		model_output = model(x, t, False)  # Du doan van toc.
 
 		mu_t = self._extract_into_tensor(self.mu_coef, t, x.shape)
 		sigma_t = self._extract_into_tensor(self.sigma_coef, t, x.shape)
 
-		if self.velocity_mode:
-			# CT-7.4 khao sat lai: alpha0_reconstructed = (1 - sigma_min) * x - sigma_t * model_output
-			# Day la cong thuc hoi quy chinh xac khong NaN/Inf o moi t, da kiem chung so hoc verify_tvs.py
-			alpha0_reconstructed = (1.0 - self.sigma_min) * x - sigma_t * model_output
-		else:
-			alpha0_reconstructed = model_output
+		# Tai tao du lieu tu van toc, khong chia cho (1 - t).
+		alpha0_reconstructed = (1.0 - self.sigma_min) * x - sigma_t * model_output
 
 		noise_pred = (x - mu_t * alpha0_reconstructed - sigma_t * self.anchor_w * alpha_l) / sigma_t.clamp(min=1e-8)
 
@@ -688,9 +607,6 @@ class GaussianDiffusionTVS(GaussianDiffusionAnchorOT):
 		return model_mean, model_log_variance
 
 	def training_losses(self, model, x_start, itmEmbeds, batch_index, model_feats, uEmbeds_batch):
-		if not self.velocity_mode:
-			return super(GaussianDiffusionTVS, self).training_losses(model, x_start, itmEmbeds, batch_index, model_feats, uEmbeds_batch)
-
 		batch_size = x_start.size(0)
 
 		if self.anchor_w != 0:

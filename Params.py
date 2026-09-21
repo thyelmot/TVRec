@@ -29,14 +29,13 @@ def ParseArgs():
 	parser.add_argument('--sampling_noise', type=bool, default=False)
 	parser.add_argument('--sampling_steps', type=int, default=0)
 
-	# [Phuong an 6 - Phuong_An_6_Learnable_Anchor_KeHoachChiTiet.md] xay tren nen Phuong an 3 (OT+CFM)
+	# OT schedule va diem neo cho TVS
 	parser.add_argument('--sigma_min', type=float, default=1e-3)
 	parser.add_argument('--w_clip', type=float, default=50.0)
-	parser.add_argument('--num_sample_steps', type=int, default=0, help='0 = tu suy round(0.6*steps), giong Phuong an 3')
-	parser.add_argument('--anchor_w', type=float, default=0.0, help='cuong do diem neo alpha_l; 0 = tat, trung khit Phuong an 3')
+	parser.add_argument('--num_sample_steps', type=int, default=0, help='0 = tu suy max(1, round(0.6*steps))')
+	parser.add_argument('--anchor_w', type=float, default=0.0, help='cuong do diem neo alpha_l; 0 = dung diem neo bang 0')
 
-	# [Phuong an 7 - Phuong_An_7_TVS_KeHoachChiTiet.md] TVS (Triangle Velocities Synergy)
-	parser.add_argument('--velocity_mode', type=int, default=0, help='1: Enable velocity prediction and TVS loss, 0: Disable')
+	# TVRec: Tri-Trajectory Velocity Learning for Multimodal Recommendation
 	parser.add_argument('--lambda_x', type=float, default=1.0, help='Weight of main trajectory loss')
 	parser.add_argument('--lambda_y', type=float, default=1.0, help='Weight of auxiliary trajectory 1 loss')
 	parser.add_argument('--lambda_z', type=float, default=1.0, help='Weight of auxiliary trajectory 2 loss')
