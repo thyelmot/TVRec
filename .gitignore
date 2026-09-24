@@ -4,3 +4,4 @@ __pycache__/
 Datasets/*/
 !Datasets/README.md
 *.log
+paper/
